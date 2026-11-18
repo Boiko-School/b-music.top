@@ -665,6 +665,48 @@
         color: #ffffff;
       }
 
+      .callback {
+        display: grid;
+        gap: 12px;
+        margin: 0 0 25px;
+        text-align: left;
+      }
+
+      .callback label {
+        display: grid;
+        gap: 4px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      .callback input {
+        min-height: 50px;
+        padding: 10px 15px;
+        border: 1px solid #c9c9c9;
+        border-radius: 5px;
+        font: inherit;
+        font-size: 16px;
+        font-weight: 400;
+      }
+
+      .callback input[aria-invalid="true"] {
+        border-color: var(--red-dark);
+      }
+
+      .callback .popup-btn {
+        width: 100%;
+        margin-top: 3px;
+      }
+
+      .callback-status {
+        min-height: 1.4em;
+        font-size: 15px;
+      }
+
+      .callback-status.is-error {
+        color: var(--red-dark);
+      }
+
       .popup-bottom {
         margin-top: 25px;
         font-size: 15px;
@@ -1414,7 +1456,20 @@
         <h2 class="popup-title" id="popup-title">
           Запишіться на перше заняття прямо зараз. Це безкоштовно :)
         </h2>
-        <p class="popup-descr">Зателефонуйте або напишіть нам</p>
+        <p class="popup-descr">Залиште ім’я й телефон — адміністратор вам передзвонить</p>
+        <form class="callback" id="callback" novalidate>
+          <label
+            >Ім’я
+            <input name="name" type="text" autocomplete="name" maxlength="100" required />
+          </label>
+          <label
+            >Телефон
+            <input name="phone" type="tel" autocomplete="tel" inputmode="tel" maxlength="30" required />
+          </label>
+          <button class="popup-btn popup-btn-red" type="submit">Передзвоніть мені</button>
+          <p class="callback-status" role="status" aria-live="polite"></p>
+        </form>
+        <p class="popup-descr">Або зателефонуйте чи напишіть нам</p>
         <a class="popup-btn popup-btn-red" href="tel:+380501331335">
           Зателефонувати: +380 50 133 13 35
         </a>
@@ -1526,6 +1581,9 @@
         document.querySelectorAll("[data-popup]").forEach(function (button) {
           button.addEventListener("click", function () {
             opener = button;
+            var tile = button.closest(".tile");
+            var title = tile && tile.querySelector("h3");
+            popup.dataset.direction = title ? title.textContent.trim() : "";
             popup.hidden = false;
             document.body.style.overflow = "hidden";
             closeButton.focus();
@@ -1544,7 +1602,7 @@
             return;
           }
           if (event.key !== "Tab") return;
-          var items = panel.querySelectorAll("a[href], button");
+          var items = panel.querySelectorAll("a[href], button, input");
           var first = items[0];
           var last = items[items.length - 1];
           if (event.shiftKey && document.activeElement === first) {
@@ -1554,6 +1612,91 @@
             event.preventDefault();
             first.focus();
           }
+        });
+      })();
+    </script>
+    <script>
+      (function () {
+        /* Заявка на дзвінок іде на сервер школи; адміністратори бачать її в «Дзвінки з сайту». */
+        var ENDPOINT = "https://music-api.dev.boiko.com.ua/api/public/call-requests";
+        var form = document.getElementById("callback");
+        var popup = document.getElementById("popup");
+        var status = form.querySelector(".callback-status");
+        var submit = form.querySelector("button[type=submit]");
+        var fields = { name: form.elements.name, phone: form.elements.phone };
+        var PHONE = /^\s*\+?(?:[\s()-]*\d){9,15}[\s()-]*$/;
+        var CALL_US = " Зателефонуйте нам: +380 50 133 13 35.";
+
+        function say(text, error) {
+          status.textContent = text;
+          status.classList.toggle("is-error", !!error);
+        }
+
+        function mark(field, wrong) {
+          fields[field].setAttribute("aria-invalid", wrong ? "true" : "false");
+        }
+
+        function problem(field, code) {
+          if (code === "FIELD_REQUIRED") return field === "name" ? "Вкажіть ім’я." : "Вкажіть телефон.";
+          if (field === "phone") return "Перевірте номер телефону: потрібно від 9 до 15 цифр.";
+          return "Ім’я задовге: не більше 100 знаків.";
+        }
+
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          var name = fields.name.value.trim();
+          var phone = fields.phone.value.trim();
+          mark("name", name === "");
+          mark("phone", !PHONE.test(phone));
+          if (name === "") {
+            say("Вкажіть ім’я.", true);
+            fields.name.focus();
+            return;
+          }
+          if (!PHONE.test(phone)) {
+            say(problem("phone", phone === "" ? "FIELD_REQUIRED" : "FIELD_FORMAT_INVALID"), true);
+            fields.phone.focus();
+            return;
+          }
+          submit.disabled = true;
+          say("Надсилаємо…");
+          fetch(ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name, phone: phone, direction: popup.dataset.direction || null }),
+          })
+            .then(function (response) {
+              if (response.ok) {
+                form.reset();
+                say("Дякуємо! Адміністратор передзвонить вам найближчим часом.");
+                return;
+              }
+              return response
+                .json()
+                .catch(function () {
+                  return {};
+                })
+                .then(function (error) {
+                  if (response.status === 429) {
+                    say("Ви вже залишили кілька заявок — ми передзвонимо." + CALL_US, true);
+                    return;
+                  }
+                  var wrong = (error.fields || [])[0];
+                  if (response.status === 400 && wrong && fields[wrong.field]) {
+                    mark(wrong.field, true);
+                    say(problem(wrong.field, wrong.code), true);
+                    fields[wrong.field].focus();
+                    return;
+                  }
+                  say("Не вдалося надіслати заявку." + CALL_US, true);
+                });
+            })
+            .catch(function () {
+              say("Не вдалося надіслати заявку." + CALL_US, true);
+            })
+            .then(function () {
+              submit.disabled = false;
+            });
         });
       })();
     </script>
